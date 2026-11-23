@@ -1,0 +1,410 @@
+@file:Suppress("UnstableApiUsage")
+
+import com.android.build.gradle.tasks.PackageApplication
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.net.URI
+
+plugins {
+    alias(libs.plugins.agp.app)
+    alias(libs.plugins.kotlin.compose.compiler)
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.lsplugin.apksign)
+    alias(libs.plugins.lsplugin.resopt)
+    id("kotlin-parcelize")
+}
+
+val androidCompileSdkVersion: Int = rootProject.extra["androidCompileSdkVersion"] as Int
+val androidCompileNdkVersion: String = rootProject.extra["androidCompileNdkVersion"] as String
+val androidBuildToolsVersion: String = rootProject.extra["androidBuildToolsVersion"] as String
+val androidMinSdkVersion: Int = rootProject.extra["androidMinSdkVersion"] as Int
+val androidTargetSdkVersion: Int = rootProject.extra["androidTargetSdkVersion"] as Int
+val managerVersionCode: Int = rootProject.extra["managerVersionCode"] as Int
+val managerVersionName: String = rootProject.extra["managerVersionName"] as String
+val branchName: String = rootProject.extra["branchName"] as String
+val kernelPatchVersion: String = rootProject.extra["kernelPatchVersion"] as String
+
+apksign {
+    storeFileProperty = "KEYSTORE_FILE"
+    storePasswordProperty = "KEYSTORE_PASSWORD"
+    keyAliasProperty = "KEY_ALIAS"
+    keyPasswordProperty = "KEY_PASSWORD"
+}
+
+val ccache = System.getenv("PATH")?.split(File.pathSeparator)
+    ?.map { File(it, "ccache") }?.firstOrNull { it.exists() }?.absolutePath
+
+val baseFlags = listOf(
+    "-Wall", "-Qunused-arguments", "-fno-rtti", "-fvisibility=hidden",
+    "-fvisibility-inlines-hidden", "-fno-exceptions", "-fno-stack-protector",
+    "-fomit-frame-pointer", "-Wno-builtin-macro-redefined", "-Wno-unused-value",
+    "-D__FILE__=__FILE_NAME__",
+    "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON", "-Wno-unused", "-Wno-unused-parameter",
+    "-Wno-unused-command-line-argument", "-Wno-incompatible-function-pointer-types",
+    "-U_FORTIFY_SOURCE", "-D_FORTIFY_SOURCE=0"
+)
+
+val baseArgs = mutableListOf(
+    "-DANDROID_STL=none", "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
+    "-DCMAKE_CXX_STANDARD=23", "-DCMAKE_C_STANDARD=23",
+    "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON", "-DCMAKE_VISIBILITY_INLINES_HIDDEN=ON",
+    "-DCMAKE_CXX_VISIBILITY_PRESET=hidden", "-DCMAKE_C_VISIBILITY_PRESET=hidden"
+).apply { if (ccache != null) add("-DANDROID_CCACHE=$ccache") }
+
+android {
+    namespace = "com.zcg.apatch"
+    applicationId = "com.zcg.apatch"
+
+    buildTypes {
+        debug {
+            isDebuggable = true
+            isMinifyEnabled = false
+            isShrinkResources = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            externalNativeBuild {
+                cmake {
+                    arguments += listOf("-DCMAKE_CXX_FLAGS_DEBUG=-Og", "-DCMAKE_C_FLAGS_DEBUG=-Og")
+                }
+            }
+        }
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            isDebuggable = false
+            multiDexEnabled = true
+            vcsInfo.include = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            externalNativeBuild {
+                cmake {
+                    val relFlags = listOf(
+                        "-flto", "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
+                        "-fno-unwind-tables", "-fno-asynchronous-unwind-tables", "-Wl,--exclude-libs,ALL",
+                        "-Ofast", "-fmerge-all-constants", "-flto=full", "-ffat-lto-objects",
+                        "-fno-semantic-interposition", "-fno-threadsafe-statics"
+                    )
+                    cppFlags += relFlags
+                    cFlags += relFlags
+                    arguments += listOf("-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_CXX_FLAGS_RELEASE=-O3 -DNDEBUG", "-DCMAKE_C_FLAGS_RELEASE=-O3 -DNDEBUG")
+                }
+            }
+        }
+    }
+
+    dependenciesInfo.includeInApk = false
+
+    buildFeatures {
+        aidl = true
+        buildConfig = true
+        compose = true
+        prefab = true
+    }
+
+    defaultConfig {
+        minSdk = androidMinSdkVersion
+        targetSdk = androidTargetSdkVersion
+        versionCode = managerVersionCode
+        versionName = managerVersionName
+        // XTC / BBK msm8937_32go_nd01 and other 32-bit-only devices have no
+        // arm64 userspace at all, so the arm32 ABI must be packaged as well --
+        // without it the manager cannot load a single native library.
+        ndk.abiFilters.addAll(arrayOf("arm64-v8a", "armeabi-v7a"))
+        externalNativeBuild {
+            cmake {
+                cppFlags += baseFlags + "-std=c++2b"
+                cFlags += baseFlags + "-std=c2x"
+                arguments += baseArgs
+                abiFilters("arm64-v8a", "armeabi-v7a")
+            }
+        }
+        buildConfigField("String", "buildKPV", "\"$kernelPatchVersion\"")
+        base.archivesName = "APatch_${managerVersionCode}_${managerVersionName}_${branchName}"
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+        resources {
+            excludes += "**"
+            merges += "META-INF/com/google/android/**"
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            version = "3.28.0+"
+            path("src/main/cpp/CMakeLists.txt")
+        }
+    }
+
+    androidResources {
+        generateLocaleConfig = true
+    }
+
+    compileSdk = androidCompileSdkVersion
+    ndkVersion = androidCompileNdkVersion
+    buildToolsVersion = androidBuildToolsVersion
+
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
+    }
+
+    android.sourceSets.named("main") {
+        kotlin.directories += "build/generated/ksp/$name/kotlin"
+        jniLibs.directories += "libs"
+    }
+}
+
+// https://stackoverflow.com/a/77745844
+tasks.withType<PackageApplication> {
+    doFirst { appMetadata.asFile.orNull?.writeText("") }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+kotlin {
+    jvmToolchain(21)
+    compilerOptions {
+        jvmTarget = JvmTarget.JVM_21
+    }
+}
+
+fun registerDownloadTask(
+    taskName: String, srcUrl: String, destPath: String, project: Project
+) {
+    project.tasks.register(taskName) {
+        val destFile = File(destPath)
+
+        doLast {
+            if (!destFile.exists() || isFileUpdated(srcUrl, destFile)) {
+                println(" - Downloading $srcUrl to ${destFile.absolutePath}")
+                downloadFile(srcUrl, destFile)
+                println(" - Download completed.")
+            } else {
+                println(" - File is up-to-date, skipping download.")
+            }
+        }
+    }
+}
+
+fun isFileUpdated(url: String, localFile: File): Boolean {
+    val connection = URI.create(url).toURL().openConnection()
+    val remoteLastModified = connection.getHeaderFieldDate("Last-Modified", 0L)
+    return remoteLastModified > localFile.lastModified()
+}
+
+fun downloadFile(url: String, destFile: File) {
+    URI.create(url).toURL().openStream().use { input ->
+        destFile.outputStream().use { output ->
+            input.copyTo(output)
+        }
+    }
+}
+
+/** Download with connect/read timeouts and retries (robust against flaky networks). */
+fun downloadFileRetry(url: String, destFile: File, maxRetries: Int = 5) {
+    var attempt = 0
+    while (true) {
+        try {
+            val conn = URI.create(url).toURL().openConnection()
+            conn.connectTimeout = 15000
+            conn.readTimeout = 60000
+            conn.getInputStream().use { input ->
+                destFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            return
+        } catch (e: Exception) {
+            attempt++
+            if (attempt >= maxRetries) throw e
+            println(" - download attempt $attempt/$maxRetries failed for $url: ${e.message}")
+            Thread.sleep(2000L * attempt)
+        }
+    }
+}
+
+registerDownloadTask(
+    taskName = "downloadKpimg",
+    srcUrl = "https://github.com/bmax121/KernelPatch/releases/download/$kernelPatchVersion/kpimg-android",
+    destPath = "${project.projectDir}/src/main/assets/kpimg",
+    project = project
+)
+
+registerDownloadTask(
+    taskName = "downloadKptools",
+    srcUrl = "https://github.com/bmax121/KernelPatch/releases/download/$kernelPatchVersion/kptools-android",
+    destPath = "${project.projectDir}/libs/arm64-v8a/libkptools.so",
+    project = project
+)
+
+// Compat kp version less than 0.10.7
+// TODO: Remove in future
+registerDownloadTask(
+    taskName = "downloadCompatKpatch",
+    srcUrl = "https://github.com/bmax121/KernelPatch/releases/download/0.10.7/kpatch-android",
+    destPath = "${project.projectDir}/libs/arm64-v8a/libkpatch.so",
+    project = project
+)
+
+// Jailbreak mode: download KernelPatch ko for every supported kernel KMI and
+// package them into the APK assets so the app can load the matching one.
+val jailbreakKmis = listOf(
+    "android12-5.10", "android13-5.10", "android13-5.15",
+    "android14-5.15", "android14-6.1", "android15-6.6", "android16-6.12",
+)
+
+tasks.register("downloadJailbreakKo") {
+    doLast {
+        val assetsDir = File("${project.projectDir}/src/main/assets")
+        assetsDir.mkdirs()
+        jailbreakKmis.forEach { kmi ->
+            val srcUrl =
+                "https://github.com/bmax121/KernelPatch/releases/download/$kernelPatchVersion/${kmi}_kernelpatch.ko"
+            val destFile = File(assetsDir, "${kmi}_kernelpatch.ko")
+            if (!destFile.exists()) {
+                println(" - Downloading $srcUrl to ${destFile.absolutePath}")
+                downloadFileRetry(srcUrl, destFile)
+            } else {
+                println(" - $kmi kernelpatch.ko already present.")
+            }
+        }
+    }
+}
+
+tasks.register<Copy>("mergeScripts") {
+    into("${project.projectDir}/src/main/resources/META-INF/com/google/android")
+    from(rootProject.file("${project.rootDir}/scripts/update_binary.sh")) {
+        rename { "update-binary" }
+    }
+    from(rootProject.file("${project.rootDir}/scripts/update_script.sh")) {
+        rename { "updater-script" }
+    }
+}
+
+tasks.getByName("preBuild").dependsOn(
+    "downloadKpimg",
+    "downloadKptools",
+    "downloadCompatKpatch",
+    "downloadJailbreakKo",
+    "mergeScripts",
+)
+
+// https://github.com/bbqsrc/cargo-ndk
+// cargo ndk -p <minSdk> -t arm64-v8a -t armeabi-v7a build --release
+tasks.register<Exec>("cargoBuild") {
+    executable("cargo")
+    // --platform has to be the app's minSdk (26), not cargo-ndk's default of 21:
+    // bionic only declares fseeko/ftello from API 24 onwards, Lua's liolib.c uses
+    // them for 32-bit builds, and clang >= 16 turns the implicit declaration
+    // that results at API 21 into a hard error ("ISO C99 and later do not
+    // support implicit function declarations"). armeabi-v7a therefore failed to
+    // build mlua-sys while arm64-v8a (64-bit off_t, available since API 21) was
+    // fine.
+    args(
+        "ndk",
+        "--platform", androidMinSdkVersion.toString(),
+        "-t", "arm64-v8a",
+        "-t", "armeabi-v7a",
+        "build", "--release"
+    )
+    workingDir("${project.rootDir}/apd")
+}
+
+tasks.register<Copy>("buildApd") {
+    dependsOn("cargoBuild")
+    from("${project.rootDir}/apd/target/aarch64-linux-android/release/apd")
+    into("${project.projectDir}/libs/arm64-v8a")
+    rename("apd", "libapd.so")
+}
+
+// arm32 twin of the daemon (32-bit-only devices such as the XTC watch).
+tasks.register<Copy>("buildApdArm") {
+    dependsOn("cargoBuild")
+    from("${project.rootDir}/apd/target/armv7-linux-androideabi/release/apd")
+    into("${project.projectDir}/libs/armeabi-v7a")
+    rename("apd", "libapd.so")
+}
+
+tasks.configureEach {
+    if (name == "mergeDebugJniLibFolders" || name == "mergeReleaseJniLibFolders") {
+        dependsOn("buildApd", "buildApdArm")
+    }
+}
+
+tasks.register<Exec>("cargoClean") {
+    executable("cargo")
+    args("clean")
+    workingDir("${project.rootDir}/apd")
+}
+
+tasks.register<Delete>("apdClean") {
+    dependsOn("cargoClean")
+    delete(file("${project.projectDir}/libs/arm64-v8a/libapd.so"))
+}
+
+tasks.clean {
+    dependsOn("apdClean")
+}
+
+ksp {
+    arg("compose-destinations.defaultTransitions", "none")
+}
+
+dependencies {
+    implementation(libs.androidx.appcompat)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.core.splashscreen)
+    implementation(libs.androidx.webkit)
+
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.material.icons.extended)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    implementation(libs.androidx.compose.runtime.livedata)
+
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
+    debugImplementation(libs.androidx.compose.ui.tooling)
+
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+
+    implementation(libs.compose.destinations.core)
+    ksp(libs.compose.destinations.ksp)
+
+    implementation(libs.com.github.topjohnwu.libsu.core)
+    implementation(libs.com.github.topjohnwu.libsu.service)
+    implementation(libs.com.github.topjohnwu.libsu.nio)
+    implementation(libs.com.github.topjohnwu.libsu.io)
+
+    implementation(libs.dev.rikka.rikkax.parcelablelist)
+
+    implementation(libs.io.coil.kt.coil3.coil.compose)
+
+    implementation(libs.kotlinx.coroutines.core)
+
+    implementation(libs.okhttp)
+
+    implementation(libs.markdown)
+
+    implementation(libs.ini4j)
+
+    compileOnly(libs.cxx)
+}

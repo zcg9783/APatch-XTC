@@ -1,0 +1,18 @@
+*.iml
+.gradle
+local.properties
+.idea
+.DS_Store
+build
+captures
+.cxx
+key.jks
+key.jks.base64.txt
+.vscode
+.kotlin
+app/src/main/resources/
+private
+.claude
+
+# AArch32 port: local Rust build output (487 MB)
+apd/target-win32/

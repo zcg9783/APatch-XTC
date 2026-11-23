@@ -118,7 +118,7 @@ class SuPromptActivity : AppCompatActivity() {
                                     SuDecisionStore.allowOnce(pid)
                                     finish()
                                 }) {
-                                    Text("本次会话")
+                                    Text("本次会话（直到设备重启）")
                                 }
                                 TextButton(onClick = {
                                     SuDecisionStore.allowAlways(pid, uid, scontext, packageName)

@@ -52,7 +52,6 @@ val baseArgs = mutableListOf(
 
 android {
     namespace = "com.zcg.apatch"
-    applicationId = "com.zcg.apatch"
 
     buildTypes {
         debug {
@@ -105,6 +104,7 @@ android {
     }
 
     defaultConfig {
+        applicationId = "com.zcg.apatch"
         minSdk = androidMinSdkVersion
         targetSdk = androidTargetSdkVersion
         versionCode = managerVersionCode
